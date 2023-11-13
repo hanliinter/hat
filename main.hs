@@ -8,6 +8,7 @@ import Control.Concurrent.Chan(Chan,newChan, writeChan, readChan)
 import Control.Exception(bracket, bracketOnError)
 import Control.Monad (unless, forever, void)
 import qualified Data.ByteString as ByteString
+import Data.ByteString(ByteString)
 import Data.Text(Text)
 import Data.Maybe(fromMaybe)
 import qualified Data.Text as Text
@@ -49,8 +50,8 @@ mainClient (sock, sockAddr) chan = do
 
 
 
-mainServer :: Chan Message -> IO a
-mainServer chan = forever $ do
+mainServer :: Chan Message -> IO ()
+mainServer chan = void $ do
   msg <- readChan chan
   case msg of
     ClientConnected client -> printf "Client %s connected, with details %s" (clientId client) (show client)
@@ -60,11 +61,13 @@ mainServer chan = forever $ do
 
 receiveMsg :: BufferSize -> Socket -> IO Text
 receiveMsg size sock = go size sock ByteString.empty
-  where go size sock result = do
+  where
+    go :: BufferSize -> Socket -> ByteString -> IO Text
+    go size sock result = do
           buffer <- recv sock size
           if ByteString.null buffer
-          then return $ decodeUtf8Lenient result cId
-          else go size sock ByteString.append(result buffer)
+          then return $ decodeUtf8Lenient result 
+          else go size sock (result <> buffer)
                               
   
 runTCPServer :: Maybe HostName -> ServiceName -> ((Socket,SockAddr)-> Chan Message -> IO a) -> IO a
