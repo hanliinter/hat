@@ -9,11 +9,12 @@ import Control.Exception(bracket, bracketOnError)
 import Control.Monad (unless, forever, void)
 import qualified Data.ByteString as ByteString
 import Data.ByteString(ByteString)
+import Data.Text.Encoding(decodeUtf8Lenient)
 import Data.Text(Text)
 import Data.Maybe(fromMaybe)
 import qualified Data.Text as Text
 import Text.Printf
-import Data.Text.Encoding(decodeUtf8Lenient)
+import System.IO
 import Network.Socket
 import Network.Socket.ByteString(recv, sendAll)
 
@@ -36,38 +37,35 @@ data Message = ClientConnected Client
 main :: IO ()
 main = runTCPServer Nothing "3000" mainClient
 
-mainClient :: (Socket,SockAddr) -> Chan Message-> IO a
+mainClient :: (Socket,SockAddr) -> Chan Message-> IO ()
 mainClient (sock, sockAddr) chan = do
   (cHost,cPort) <- getNameInfo [NI_NUMERICHOST, NI_NUMERICSERV]  True True sockAddr
-  let cId = fromMaybe "" cHost ++ (":" ++ fromMaybe "" cPort)
-       
-        
+  let cId = fromMaybe "" cHost ++ (":" ++ fromMaybe "" cPort)    
   let initialMsg = ClientConnected $ Client { clientId = cId, clientConnection = sock, clientSocketAddr = sockAddr }
   writeChan chan initialMsg
-  forever $ do
-    msg <- receiveMsg bufferSize sock
-    writeChan chan $ Content msg cId
+  loop cId
+
+  where   
+          loop cId = do
+            msg <- recv sock bufferSize
+            if ByteString.length msg == 0
+              then writeChan chan $ ClientDisconnected cId
+             else do
+              writeChan chan $ Content (decodeUtf8Lenient msg) cId
+              loop cId
 
 
 
 mainServer :: Chan Message -> IO ()
-mainServer chan = void $ do
+mainServer chan = forever $ do
   msg <- readChan chan
+  hSetBuffering stdout NoBuffering
   case msg of
-    ClientConnected client -> printf "Client %s connected, with details %s" (clientId client) (show client)
-    ClientDisconnected cId -> printf "Client %s disconnected" cId
+    ClientConnected client -> printf "Client %s connected, with details %s\n" (clientId client) (show client)
+    ClientDisconnected cId -> printf "Client %s disconnected \n" cId
     Content content cId -> printf "Client %s: %s" cId (Text.unpack content)
 
 
-receiveMsg :: BufferSize -> Socket -> IO Text
-receiveMsg size sock = go size sock ByteString.empty
-  where
-    go :: BufferSize -> Socket -> ByteString -> IO Text
-    go size sock result = do
-          buffer <- recv sock size
-          if ByteString.null buffer
-          then return $ decodeUtf8Lenient result 
-          else go size sock (result <> buffer)
                               
   
 runTCPServer :: Maybe HostName -> ServiceName -> ((Socket,SockAddr)-> Chan Message -> IO a) -> IO a
