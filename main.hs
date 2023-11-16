@@ -12,6 +12,8 @@ import Data.ByteString(ByteString)
 import Data.Text.Encoding(decodeUtf8Lenient)
 import Data.Text(Text)
 import Data.Maybe(fromMaybe)
+import Data.Map(Map)
+import qualified Data.Map as Map
 import qualified Data.Text as Text
 import Text.Printf
 import System.IO
@@ -53,17 +55,23 @@ mainClient (sock, sockAddr) chan = do
              else do
               writeChan chan $ Content (decodeUtf8Lenient msg) cId
               loop cId
-
-
-
-mainServer :: Chan Message -> IO ()
-mainServer chan = forever $ do
+mainServer ::Map ClientId Client -> Chan Message -> IO ()
+mainServer clients chan =  do
   msg <- readChan chan
   hSetBuffering stdout NoBuffering
   case msg of
-    ClientConnected client -> printf "Client %s connected, with details %s\n" (clientId client) (show client)
-    ClientDisconnected cId -> printf "Client %s disconnected \n" cId
-    Content content cId -> printf "Client %s: %s" cId (Text.unpack content)
+    ClientConnected client -> do
+      printf "Client %s connected, with details %s\n" (clientId client) (show client)
+      let newClients = Map.insert (clientId client) client clients
+      mainServer newClients chan
+    ClientDisconnected cId -> do
+      printf "Client %s disconnected \n" cId
+      let newClients = Map.delete cId clients 
+      mainServer newClients chan
+    Content content cId -> do
+      printf "Client %s: %s" cId (Text.unpack content)
+      --sendAll content clients
+      
 
 
                               
@@ -71,7 +79,9 @@ mainServer chan = forever $ do
 runTCPServer :: Maybe HostName -> ServiceName -> ((Socket,SockAddr)-> Chan Message -> IO a) -> IO a
 runTCPServer mhost port server = do
   chan <- newChan
-  forkFinally (mainServer chan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
+  let clients = Map.empty
+
+  forkFinally (mainServer clients chan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
                                    )
   addr <- resolve
   bracket (open addr) close (loop chan)
