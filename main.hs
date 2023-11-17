@@ -37,8 +37,12 @@ data Client = Client {clientId :: ClientId,
 data Message = ClientConnected Client
              | ClientDisconnected ClientId
              | Content Text ClientId
-main :: IO ()
-main = runTCPServer Nothing "3000" mainClient
+
+
+data Environment = Environment { envClients :: MVar (Map ClientId Client),
+                                    envChan :: Chan Message,
+                                    envMsgChan :: Chan Text
+                                  } deriving (Eq)
 
 mainClient :: (Socket,SockAddr) -> Chan Message-> IO ()
 mainClient (sock, sockAddr) chan = do
@@ -64,12 +68,13 @@ sendProcess mMap msgChan = do
   let clientList = Map.toList clients
       clientConnections = map (\(_,client)-> clientConnection client ) clientList
 --  sendAll clientList msg
-  printf "sending message: %s\n" (Text.unpack msg)
+--  printf "sending message: %s\n" (Text.unpack msg)
   sendProcess mMap msgChan
 
 
-mainServer :: MVar(Map ClientId Client) -> Chan Message -> Chan Text-> IO ()
-mainServer mClients chan msgChan =  do
+mainServer :: Environment -> IO ()
+mainServer (Environment mClients chan msgChan) =  do
+  
   msg <- readChan chan
   hSetBuffering stdout NoBuffering
   case msg of
@@ -78,18 +83,18 @@ mainServer mClients chan msgChan =  do
       clients <- takeMVar mClients
       let newClients = Map.insert (clientId client) client clients
       putMVar mClients newClients
-      mainServer mClients chan msgChan
+      mainServer (Environment mClients chan msgChan)
     ClientDisconnected cId -> do
       printf "Client %s disconnected \n" cId
       clients <- takeMVar mClients
       let newClients = Map.delete cId clients 
       putMVar mClients newClients
-      mainServer mClients chan msgChan
+      mainServer (Environment mClients chan msgChan)
     Content content cId -> do
       --printf "Client %s: %s" cId (Text.unpack content)
       --sendAll content clients
       writeChan msgChan content
-      mainServer mClients chan msgChan
+      mainServer (Environment mClients chan msgChan)
 
 
                               
@@ -101,7 +106,8 @@ runTCPServer mhost port server = do
   mMap <- newEmptyMVar
   let clients = Map.empty
   putMVar mMap clients
-  forkFinally (mainServer mMap chan msgChan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
+  let env = Environment mMap chan msgChan
+  forkFinally (mainServer env) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
                                    )
   forkFinally (sendProcess mMap msgChan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side echoing process finished" })
   addr <- resolve
@@ -123,3 +129,7 @@ runTCPServer mhost port server = do
       return sock
     loop chan sock = forever $ bracketOnError (accept sock) (close . fst)
       $ \s@(conn,_) -> forkFinally (server s chan) (const $ gracefulClose conn 5000) 
+
+
+main :: IO ()
+main = runTCPServer Nothing "3000" mainClient
