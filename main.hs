@@ -5,6 +5,7 @@ module Main where
 import Control.Concurrent (forkFinally)
 import Control.Concurrent.Chan(Chan,newChan, writeChan, readChan)
 -- Perhaps TChan is better
+import Control.Concurrent.MVar
 import Control.Exception(bracket, bracketOnError)
 import Control.Monad (unless, forever, void)
 import qualified Data.ByteString as ByteString
@@ -55,23 +56,40 @@ mainClient (sock, sockAddr) chan = do
              else do
               writeChan chan $ Content (decodeUtf8Lenient msg) cId
               loop cId
-mainServer ::Map ClientId Client -> Chan Message -> IO ()
-mainServer clients chan =  do
+
+sendProcess :: MVar (Map ClientId Client)  -> Chan Text -> IO ()
+sendProcess mMap msgChan = do
+  msg <- readChan msgChan
+  clients <- readMVar mMap
+  let clientList = Map.toList clients
+      clientConnections = map (\(_,client)-> clientConnection client ) clientList
+--  sendAll clientList msg
+  printf "sending message: %s\n" (Text.unpack msg)
+  sendProcess mMap msgChan
+
+
+mainServer :: MVar(Map ClientId Client) -> Chan Message -> Chan Text-> IO ()
+mainServer mClients chan msgChan =  do
   msg <- readChan chan
   hSetBuffering stdout NoBuffering
   case msg of
     ClientConnected client -> do
       printf "Client %s connected, with details %s\n" (clientId client) (show client)
+      clients <- takeMVar mClients
       let newClients = Map.insert (clientId client) client clients
-      mainServer newClients chan
+      putMVar mClients newClients
+      mainServer mClients chan msgChan
     ClientDisconnected cId -> do
       printf "Client %s disconnected \n" cId
+      clients <- takeMVar mClients
       let newClients = Map.delete cId clients 
-      mainServer newClients chan
+      putMVar mClients newClients
+      mainServer mClients chan msgChan
     Content content cId -> do
-      printf "Client %s: %s" cId (Text.unpack content)
+      --printf "Client %s: %s" cId (Text.unpack content)
       --sendAll content clients
-      
+      writeChan msgChan content
+      mainServer mClients chan msgChan
 
 
                               
@@ -79,10 +97,13 @@ mainServer clients chan =  do
 runTCPServer :: Maybe HostName -> ServiceName -> ((Socket,SockAddr)-> Chan Message -> IO a) -> IO a
 runTCPServer mhost port server = do
   chan <- newChan
+  msgChan <- newChan
+  mMap <- newEmptyMVar
   let clients = Map.empty
-
-  forkFinally (mainServer clients chan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
+  putMVar mMap clients
+  forkFinally (mainServer mMap chan msgChan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side channel process finished" }
                                    )
+  forkFinally (sendProcess mMap msgChan) (\case {Left some -> print some ; Right _ -> putStrLn "Server side echoing process finished" })
   addr <- resolve
   bracket (open addr) close (loop chan)
 
